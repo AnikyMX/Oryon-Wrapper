@@ -108,7 +108,7 @@ void initialize_gl4es() {
         globals4es.nobanner = IsEnvVarTrue("LIBGL_NOBANNER");
         #endif
 
-        SHUT_LOGD("Initialising GL4ES 3\n");
+        SHUT_LOGD("Initialising Oryon Wrapper\n");
 
     if(!globals4es.nobanner) print_build_infos();
 
@@ -207,7 +207,7 @@ void initialize_gl4es() {
         break;
       default:
         // automatic GL version selection
-        globals4es.gl = (globals4es.es==1)?15:21;  // forcing GL 1.5 for es1.1 and GL 2.1 for es2.0
+        globals4es.gl = (globals4es.es==1)?15:33;  // forcing GL 1.5 for es1.1 and GL 3.3 for es2.0
         break;
     }
 
@@ -381,10 +381,10 @@ void initialize_gl4es() {
         SHUT_LOGD("Override version string with \"%s\" (should be in the form of \"1.x\")\n", env_version);
     }
     if(env_version) {
-        snprintf(globals4es.version, 49, "%s gl4es wrapper %d.%d.%d", env_version, MAJOR, MINOR, REVISION);
+        snprintf(globals4es.version, 49, "%s Oryon Wrapper %d.%d.%d", env_version, MAJOR, MINOR, REVISION);
         SHUT_LOGD("Targeting OpenGL %s\n", env_version);
     } else {
-        snprintf(globals4es.version, 49, "%d.%d GL4ES 3 Wrapper (%d.%d.%d)", globals4es.gl/10, globals4es.gl%10, MAJOR, MINOR, REVISION);
+        snprintf(globals4es.version, 49, "%d.%d Oryon Wrapper (%d.%d.%d)", globals4es.gl/10, globals4es.gl%10, MAJOR, MINOR, REVISION);
         SHUT_LOGD("Targeting OpenGL %d.%d\n", globals4es.gl/10, globals4es.gl%10);
     }
 

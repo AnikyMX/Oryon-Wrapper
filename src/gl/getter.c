@@ -191,9 +191,6 @@ void BuildExtensionsList() {
             strcat(extensions, "GL_EXT_depth_texture ");
             strcat(extensions, "GL_ARB_depth_texture ");
         }
-        if(hardext.occlusionquery) {
-            strcat(extensions, "GL_ARB_occlusion_query ");
-        }
         if(hardext.esversion>1) {
             strcat(extensions, "GL_EXT_fog_coord ");
             strcat(extensions, "GL_EXT_separate_specular_color ");
@@ -252,7 +249,7 @@ const GLubyte* APIENTRY_GL4ES gl4es_glGetString(GLenum name) {
             BuildExtensionsList();
             return glstate->extensions;
 		case GL_VENDOR:
-			return (GLubyte *)"ptitSeb & AnikyMX";
+			return (GLubyte *)"AnikyMX";
 		case GL_RENDERER: {
             static char renderer_buff[128];
             snprintf(renderer_buff, 127, "%s", hardext.renderer);
