@@ -1,0 +1,4 @@
+{
+  global: gl[A-Z]*; egl[A-Z]*;
+  local: *;
+};

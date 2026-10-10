@@ -31,5 +31,6 @@ for s in steps:
         sys.exit(f"step failed: {os.path.basename(s[0])}")
 print("[env] " + " | ".join(
     f"{t}={'yes' if shutil.which(t) else 'no'}" for t in ("vulkaninfo", "glslangValidator", "spirv-val", "cmake", "clang++")))
-rc = run(os.path.join(T, "validate.py"), PRJ, IDX)
+so = os.path.join(PRJ, "build/host/liboryon.so")
+rc = run(os.path.join(T, "validate.py"), PRJ, IDX, *(["--so", so] if os.path.exists(so) else []))
 sys.exit(rc)

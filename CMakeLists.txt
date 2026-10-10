@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.22)
+project(oryon LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
+file(GLOB ORYON_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
+add_library(oryon SHARED ${ORYON_SOURCES})
+set_target_properties(oryon PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+target_include_directories(oryon PRIVATE ${CMAKE_SOURCE_DIR}/third_party/vulkan)
+target_compile_options(oryon PRIVATE -fno-exceptions -fno-rtti -Wall -Wextra -Wno-missing-field-initializers)
+target_link_options(oryon PRIVATE -Wl,--version-script=${CMAKE_SOURCE_DIR}/src/exports.map -Wl,--no-undefined
+                    -Wl,--gc-sections)
+set_property(TARGET oryon APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/src/exports.map)
+
+if(ANDROID)
+  target_link_libraries(oryon PRIVATE android log dl)
+  target_link_options(oryon PRIVATE -Wl,-z,max-page-size=16384 $<$<CONFIG:Release>:-s>)
+else()
+  target_compile_options(oryon PRIVATE -Werror)
+  target_link_libraries(oryon PRIVATE dl)
+endif()

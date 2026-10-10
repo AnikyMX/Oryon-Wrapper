@@ -2,6 +2,8 @@ import sys, os, re, json, collections
 
 ROOT, IDX = sys.argv[1], sys.argv[2]
 QUIET = "--quiet" in sys.argv
+SO = sys.argv[sys.argv.index("--so") + 1] if "--so" in sys.argv else None
+FILES = "--files" in sys.argv
 L = lambda f: json.load(open(os.path.join(IDX, f)))
 lw, caps, reach, pjx, vk = L("lwjgl.json"), L("glcaps_checks.json"), L("gl_reach.json"), L("pojavexec_elf.json"), L("vk_api.json")
 ACC_NATIVE = 0x100
@@ -88,8 +90,10 @@ def args_at(s, i):
 err, warn = [], []
 gl_impl, egl_impl, procs, stubs, cap_ver, cap_ext = {}, {}, set(), set(), [], set()
 jrefs = vkcalls = vkids = consts = desig = 0
+per_file = {}
 for p in files:
     rel = os.path.relpath(p, ROOT); raw = open(p, errors="ignore").read(); code = strip(raw)
+    snap = (len(err), vkids, vkcalls, desig, consts, len(gl_impl), len(egl_impl))
     for m in re.finditer(r"org/lwjgl/[\w/$]+(?:\.([\w<>]+)(\([^)\s]*\)[\w/;\[$]+))?", raw):
         jrefs += 1
         cls = m.group(0).split(".")[0]
@@ -143,6 +147,8 @@ for p in files:
             if t not in mem: err.append(f"{rel}: {st} has no member .{t}")
         idx = [mem.index(t) for t in top if t in mem]
         if idx != sorted(idx): err.append(f"{rel}: {st} designated initializers out of order")
+    per_file[rel] = [len(err) - snap[0], vkids - snap[1], vkcalls - snap[2], desig - snap[3], consts - snap[4],
+                     len(gl_impl) - snap[5], len(egl_impl) - snap[6]]
 
 for n, (rel, ret, a) in sorted(gl_impl.items()):
     if n not in natives:
@@ -179,10 +185,28 @@ for n in egl_req:
 for n in egl_impl:
     if n not in egl_req: warn.append(f"egl: {n} not used by libpojavexec")
 
+exports = None
+if SO:
+    from elftools.elf.elffile import ELFFile
+    with open(SO, "rb") as f:
+        exports = {y.name for y in ELFFile(f).get_section_by_name(".dynsym").iter_symbols()
+                   if y.name and y["st_shndx"] != "SHN_UNDEF" and y["st_info"]["bind"] in ("STB_GLOBAL", "STB_WEAK")
+                   and y["st_info"]["type"] in ("STT_FUNC", "STT_OBJECT")}
+    want = set(gl_impl) | set(egl_impl)
+    err += [f"so: {n} declared but not exported" for n in sorted(want - exports)]
+    err += [f"so: unexpected export {n}" for n in sorted(exports - want)]
+
 impl_mc = len(mc_gl & set(gl_impl))
 print(f"[validate] files={len(files)} java_refs={jrefs} gl_impl={len(gl_impl)} procs={len(procs)} stubs={len(stubs)} "
       f"egl={len(egl_impl)}/{len(egl_req)} claimed_flags={len(claimed)} gl_consts={consts}")
 print(f"[validate] vk_ids={vkids} vk_calls={vkcalls} vk_designators={desig}  mc_gl_coverage={impl_mc}/{len(mc_gl)}")
+if exports is not None:
+    print(f"[validate] so={os.path.basename(SO)} exports={len(exports)}")
+if FILES:
+    for rel, (e, vi, vc, de, co, g, eg) in per_file.items():
+        tag = " ".join(f"{k}={v}" for k, v in (("gl", g), ("egl", eg), ("const", co), ("vk_id", vi), ("vk_call", vc),
+                                                ("desig", de)) if v)
+        print(f"   {rel:24s} {tag or '-'}  {'OK' if not e else f'ERR={e}'}")
 print(f"[validate] errors={len(err)} warnings={len(warn)} -> {'PASS' if not err else 'FAIL'}")
 for x in (err if QUIET else err + warn)[:60]:
     print("   -", x)
