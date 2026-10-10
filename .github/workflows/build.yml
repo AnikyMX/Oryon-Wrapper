@@ -1,0 +1,28 @@
+name: Oryon-Wrapper
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Setup Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r30
+          add-to-path: false
+
+      - name: Build Native Library (arm64-v8a) #No Run Yet
+
+      - name: Upload liboryon.so
+        uses: actions/upload-artifact@v7
+        with:
+          path: build/liboryon.so
+          archive: false
