@@ -1,5 +1,6 @@
 #include "device.hpp"
 #include "oryon.hpp"
+#include "shaders.inc"
 #include <cstring>
 
 namespace oryon {
@@ -21,6 +22,8 @@ int rank(VkPhysicalDeviceType t) {
     default: return 0;
   }
 }
+
+bool create_fixed_function(Device& d);
 
 bool create(Device& d) {
   if (!vkg_load()) return false;
@@ -87,6 +90,10 @@ bool create(Device& d) {
   const char* swapchain = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
   d.swapchain_ext = d.surface_ext && has_ext(dext, swapchain);
 
+  VkPhysicalDeviceFeatures have;
+  vkGetPhysicalDeviceFeatures(d.gpu, &have);
+  d.features.wideLines = have.wideLines;
+  d.features.logicOp = have.logicOp;
   const float priority = 1.0f;
   VkDeviceQueueCreateInfo qci{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                               .pNext = nullptr,
@@ -103,7 +110,7 @@ bool create(Device& d) {
                          .ppEnabledLayerNames = nullptr,
                          .enabledExtensionCount = d.swapchain_ext ? 1u : 0u,
                          .ppEnabledExtensionNames = &swapchain,
-                         .pEnabledFeatures = nullptr};
+                         .pEnabledFeatures = &d.features};
   if (vkCreateDevice(d.gpu, &dci, nullptr, &d.dev) != VK_SUCCESS || !vkd_load(d.dev)) return false;
   vkGetDeviceQueue(d.dev, d.family, 0, &d.queue);
 
@@ -130,6 +137,7 @@ bool create(Device& d) {
                                   .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                   .commandBufferCount = 1};
   if (vkAllocateCommandBuffers(d.dev, &cai, &d.once_cmd) != VK_SUCCESS) return false;
+  if (!create_fixed_function(d)) return false;
 
   ORYON_LOG("Vulkan device '%s' api %u.%u.%u (instance %u.%u), swapchain=%d",
             d.props.deviceName, VK_VERSION_MAJOR(d.props.apiVersion), VK_VERSION_MINOR(d.props.apiVersion),
@@ -137,12 +145,102 @@ bool create(Device& d) {
   return true;
 }
 
+// Layouts, shader modules and constant resources shared by every fixed-function draw.
+bool create_fixed_function(Device& d) {
+  const VkDescriptorSetLayoutBinding bindings[3] = {
+      {.binding = 0,
+       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+       .descriptorCount = 1,
+       .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+       .pImmutableSamplers = nullptr},
+      {.binding = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+       .descriptorCount = 1,
+       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+       .pImmutableSamplers = nullptr},
+      {.binding = 2,
+       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+       .descriptorCount = 1,
+       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+       .pImmutableSamplers = nullptr}};
+  VkDescriptorSetLayoutCreateInfo sci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                      .pNext = nullptr,
+                                      .flags = 0,
+                                      .bindingCount = 3,
+                                      .pBindings = bindings};
+  if (vkCreateDescriptorSetLayout(d.dev, &sci, nullptr, &d.set_layout) != VK_SUCCESS) return false;
+  VkPipelineLayoutCreateInfo lci{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                 .pNext = nullptr,
+                                 .flags = 0,
+                                 .setLayoutCount = 1,
+                                 .pSetLayouts = &d.set_layout,
+                                 .pushConstantRangeCount = 0,
+                                 .pPushConstantRanges = nullptr};
+  if (vkCreatePipelineLayout(d.dev, &lci, nullptr, &d.layout) != VK_SUCCESS) return false;
+  VkShaderModuleCreateInfo vci{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                               .pNext = nullptr,
+                               .flags = 0,
+                               .codeSize = sizeof kFFVert,
+                               .pCode = kFFVert};
+  VkShaderModuleCreateInfo fci{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                               .pNext = nullptr,
+                               .flags = 0,
+                               .codeSize = sizeof kFFFrag,
+                               .pCode = kFFFrag};
+  VkPipelineCacheCreateInfo pci{.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+                                .pNext = nullptr,
+                                .flags = 0,
+                                .initialDataSize = 0,
+                                .pInitialData = nullptr};
+  if (vkCreateShaderModule(d.dev, &vci, nullptr, &d.vert) != VK_SUCCESS ||
+      vkCreateShaderModule(d.dev, &fci, nullptr, &d.frag) != VK_SUCCESS ||
+      vkCreatePipelineCache(d.dev, &pci, nullptr, &d.cache) != VK_SUCCESS)
+    return false;
+
+  VkFormatProperties fp;  // GL_SHORT texcoords (MC lightmap) need a scaled vertex format; not mandatory in Vulkan
+  vkGetPhysicalDeviceFormatProperties(d.gpu, VK_FORMAT_R16G16_SSCALED, &fp);
+  if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) ORYON_LOG("warning: R16G16_SSCALED vertex fetch unsupported");
+
+  constexpr uint32_t quads = kQuadBatch / 4;
+  if (!dev_host_buffer(d.quads, quads * 6 * sizeof(uint16_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+    return false;
+  auto* idx = static_cast<uint16_t*>(d.quads.map);
+  for (uint32_t q = 0; q < quads; ++q) {  // GL quad (0,1,2,3) -> triangles (0,1,2) (2,3,0), winding kept
+    const uint16_t v = static_cast<uint16_t>(q * 4);
+    const uint16_t tri[6] = {v, uint16_t(v + 1), uint16_t(v + 2), uint16_t(v + 2), uint16_t(v + 3), v};
+    std::memcpy(idx + q * 6, tri, sizeof tri);
+  }
+
+  if (!dev_image(d.white, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                 VK_IMAGE_ASPECT_COLOR_BIT))
+    return false;
+  VkCommandBuffer cmd = dev_once_begin();
+  const VkClearColorValue one{.float32 = {1.0f, 1.0f, 1.0f, 1.0f}};
+  const VkImageSubresourceRange range{.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                      .baseMipLevel = 0,
+                                      .levelCount = 1,
+                                      .baseArrayLayer = 0,
+                                      .layerCount = 1};
+  image_barrier(cmd, d.white.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+  vkCmdClearColorImage(cmd, d.white.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1, &range);
+  image_barrier(cmd, d.white.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  dev_once_end(cmd);
+  return true;
+}
+
 }  // namespace
 
+Device g_device;
+
 Device* device() {
-  static Device d;
-  static const bool ok = create(d);
-  return ok ? &d : nullptr;
+  static const bool ok = create(g_device);
+  return ok ? &g_device : nullptr;
 }
 
 bool format_has_stencil(VkFormat f) {
@@ -162,7 +260,8 @@ uint32_t dev_memory_type(uint32_t bits, VkMemoryPropertyFlags need, VkMemoryProp
   return fallback;
 }
 
-bool dev_image(Image& im, VkFormat format, uint32_t w, uint32_t h, VkImageUsageFlags usage, VkImageAspectFlags aspect) {
+bool dev_image(Image& im, VkFormat format, uint32_t w, uint32_t h, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+               uint32_t levels) {
   Device& d = dev();
   VkImageCreateInfo ci{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                        .pNext = nullptr,
@@ -170,7 +269,7 @@ bool dev_image(Image& im, VkFormat format, uint32_t w, uint32_t h, VkImageUsageF
                        .imageType = VK_IMAGE_TYPE_2D,
                        .format = format,
                        .extent = {w, h, 1},
-                       .mipLevels = 1,
+                       .mipLevels = levels,
                        .arrayLayers = 1,
                        .samples = VK_SAMPLE_COUNT_1_BIT,
                        .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -199,7 +298,7 @@ bool dev_image(Image& im, VkFormat format, uint32_t w, uint32_t h, VkImageUsageF
                            .format = format,
                            .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                           VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
-                           .subresourceRange = {aspect, 0, 1, 0, 1}};
+                           .subresourceRange = {aspect, 0, levels, 0, 1}};
   if (vkCreateImageView(d.dev, &vi, nullptr, &im.view) != VK_SUCCESS) {
     dev_destroy(im);
     return false;
@@ -218,21 +317,21 @@ void dev_destroy(Image& im) {
   im = Image{};
 }
 
-bool dev_readback(Buffer& b, VkDeviceSize size) {
+bool dev_host_buffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags need,
+                     VkMemoryPropertyFlags want) {
   Device& d = dev();
   VkBufferCreateInfo ci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                         .pNext = nullptr,
                         .flags = 0,
                         .size = size,
-                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        .usage = usage,
                         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                         .queueFamilyIndexCount = 0,
                         .pQueueFamilyIndices = nullptr};
   if (vkCreateBuffer(d.dev, &ci, nullptr, &b.buffer) != VK_SUCCESS) return false;
   VkMemoryRequirements req;
   vkGetBufferMemoryRequirements(d.dev, b.buffer, &req);
-  const uint32_t type = dev_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  const uint32_t type = dev_memory_type(req.memoryTypeBits, need, want);
   VkMemoryAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                           .pNext = nullptr,
                           .allocationSize = req.size,
@@ -386,7 +485,7 @@ void dev_idle() {
 
 void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
                    VkPipelineStageFlags src_stage, VkAccessFlags src_access, VkPipelineStageFlags dst_stage,
-                   VkAccessFlags dst_access) {
+                   VkAccessFlags dst_access, uint32_t level, uint32_t levels) {
   VkImageMemoryBarrier b{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                          .pNext = nullptr,
                          .srcAccessMask = src_access,
@@ -396,7 +495,7 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect
                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                          .image = image,
-                         .subresourceRange = {aspect, 0, 1, 0, 1}};
+                         .subresourceRange = {aspect, level, levels, 0, 1}};
   vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 

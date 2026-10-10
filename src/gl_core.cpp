@@ -11,23 +11,29 @@ using namespace oryon;
 
 namespace {
 
-// glEnable caps tracked as bits; anything else lands in Context::extra_caps.
-constexpr GLenum kCaps[] = {GL_ALPHA_TEST,  GL_BLEND,          GL_COLOR_LOGIC_OP,      GL_COLOR_MATERIAL,
-                            GL_CULL_FACE,   GL_DEPTH_TEST,     GL_DITHER,              GL_FOG,
-                            GL_LIGHTING,    GL_LIGHT0,         GL_LIGHT1,              GL_LINE_SMOOTH,
-                            GL_MULTISAMPLE, GL_NORMALIZE,      GL_POLYGON_OFFSET_FILL, GL_POLYGON_OFFSET_LINE,
-                            GL_RESCALE_NORMAL, GL_SCISSOR_TEST, GL_STENCIL_TEST,       GL_TEXTURE_2D,
-                            GL_TEXTURE_GEN_Q, GL_TEXTURE_GEN_R, GL_TEXTURE_GEN_S,      GL_TEXTURE_GEN_T};
-static_assert(std::size(kCaps) <= 64);
+static_assert(GL_TEXTURE_GEN_T - GL_TEXTURE_GEN_S == 1 && GL_TEXTURE_GEN_R - GL_TEXTURE_GEN_S == 2 &&
+              GL_TEXTURE_GEN_Q - GL_TEXTURE_GEN_S == 3);
 
-constexpr int cap_bit(GLenum cap) {
-  for (int i = 0; i < static_cast<int>(std::size(kCaps)); ++i)
-    if (kCaps[i] == cap) return i;
-  return -1;
+// Per-unit caps (GL_TEXTURE_2D, GL_TEXTURE_GEN_*) or nullptr.
+bool* unit_cap(Context* c, GLenum cap, uint8_t& gen_bit) {
+  TexUnit& u = c->units[c->active];
+  if (cap == GL_TEXTURE_2D) return &u.enabled;
+  if (cap - GL_TEXTURE_GEN_S < 4) gen_bit = uint8_t(1) << (cap - GL_TEXTURE_GEN_S);
+  return nullptr;
 }
-constexpr uint64_t bit(GLenum cap) { return uint64_t(1) << cap_bit(cap); }
 
 void set_cap(Context* c, GLenum cap, bool on) {
+  c->ff_dirty = true;
+  uint8_t gen = 0;
+  if (bool* flag = unit_cap(c, cap, gen)) {
+    *flag = on;
+    return;
+  }
+  if (gen) {
+    uint8_t& g = c->units[c->active].gen_on;
+    g = on ? g | gen : g & ~gen;
+    return;
+  }
   if (const int b = cap_bit(cap); b >= 0) {
     c->caps = on ? c->caps | (uint64_t(1) << b) : c->caps & ~(uint64_t(1) << b);
     return;
@@ -40,13 +46,16 @@ void set_cap(Context* c, GLenum cap, bool on) {
   if (on && c->extra_count < std::size(c->extra_caps)) c->extra_caps[c->extra_count++] = cap;
 }
 
-bool get_cap(const Context* c, GLenum cap) {
+bool get_cap(Context* c, GLenum cap) {
+  uint8_t gen = 0;
+  if (const bool* flag = unit_cap(c, cap, gen)) return *flag;
+  if (gen) return c->units[c->active].gen_on & gen;
   if (const int b = cap_bit(cap); b >= 0) return (c->caps >> b) & 1;
   return std::find(c->extra_caps, c->extra_caps + c->extra_count, cap) != c->extra_caps + c->extra_count;
 }
 
 // Fills v; returns the value count (0 = unknown pname). `color` marks normalized values.
-int query(const Context* c, GLenum pname, double* v, bool& color) {
+int query(Context* c, GLenum pname, double* v, bool& color) {
   const VkPhysicalDeviceLimits& lim = dev().props.limits;
   const VkFormat depth = c->draw ? c->draw->depth.format : VK_FORMAT_UNDEFINED;
   color = false;
@@ -64,23 +73,53 @@ int query(const Context* c, GLenum pname, double* v, bool& color) {
     case GL_COLOR_CLEAR_VALUE: std::copy(c->clear_color, c->clear_color + 4, v); color = true; return 4;
     case GL_DEPTH_CLEAR_VALUE: v[0] = c->clear_depth; color = true; return 1;
     case GL_STENCIL_CLEAR_VALUE: v[0] = c->clear_stencil; return 1;
-    case GL_PACK_ALIGNMENT:
-    case GL_UNPACK_ALIGNMENT: v[0] = 4; return 1;
+    case GL_PACK_ALIGNMENT: v[0] = c->pack_alignment; return 1;
+    case GL_UNPACK_ALIGNMENT: v[0] = c->unpack_alignment; return 1;
+    case GL_MODELVIEW_MATRIX: std::copy(top(c->modelview).m, top(c->modelview).m + 16, v); return 16;
+    case GL_PROJECTION_MATRIX: std::copy(top(c->projection).m, top(c->projection).m + 16, v); return 16;
+    case GL_TEXTURE_MATRIX: {
+      const Mat4& m = top(c->units[c->active].matrix);
+      std::copy(m.m, m.m + 16, v);
+      return 16;
+    }
     case GL_MAJOR_VERSION: v[0] = kCapMajor; return kCapMajor >= 3;
     case GL_MINOR_VERSION: v[0] = kCapMinor; return kCapMajor >= 3;
     case GL_NUM_EXTENSIONS:
     case GL_CONTEXT_FLAGS: v[0] = 0; return kCapMajor >= 3;
-    default:
-      if (cap_bit(pname) < 0) return 0;
+    default: {
+      uint8_t gen = 0;
+      if (cap_bit(pname) < 0 && !unit_cap(c, pname, gen) && !gen) return 0;
       v[0] = get_cap(c, pname);
       return 1;
+    }
   }
 }
 
 }  // namespace
 
 void oryon::gl_defaults(Context& c) {
-  c.caps = bit(GL_DITHER) | bit(GL_MULTISAMPLE);
+  c.caps = cap_mask(GL_DITHER) | cap_mask(GL_MULTISAMPLE);
+  c.modelview.s[0] = c.projection.s[0] = mat_identity();
+  const int32_t modulate = 1 | 0 << 4 | 3 << 8 | 1 << 12;  // MODULATE(TEXTURE, PREVIOUS, CONSTANT)
+  for (TexUnit& u : c.units) {
+    u.matrix.s[0] = mat_identity();
+    u.combine[0] = modulate | 0 << 16 | 0 << 20 | 2 << 24;  // SRC_COLOR, SRC_COLOR, SRC_ALPHA
+    u.combine[1] = modulate | 2 << 16 | 2 << 20 | 2 << 24;  // SRC_ALPHA x3
+    for (int i = 0; i < 4; ++i) u.gen_mode[i] = GL_EYE_LINEAR;
+    u.gen_object[0][0] = u.gen_eye[0][0] = 1.0f;  // S = (1,0,0,0), T = (0,1,0,0), R = Q = 0
+    u.gen_object[1][1] = u.gen_eye[1][1] = 1.0f;
+  }
+  const GLfloat one[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  std::copy(one, one + 4, c.current[A_COLOR]);
+  c.current[A_TEX0][3] = c.current[A_TEX1][3] = 1.0f;
+  c.current[A_NORMAL][2] = 1.0f;
+  std::copy(one, one + 4, c.light_diffuse[0]);
+  for (int i = 0; i < 2; ++i) {
+    c.light_pos[i][2] = 1.0f;
+    c.light_ambient[i][3] = c.light_diffuse[1][3] = 1.0f;
+  }
+  const GLfloat ambient[4] = {0.2f, 0.2f, 0.2f, 1.0f};
+  std::copy(ambient, ambient + 4, c.scene_ambient);
 }
 
 OGL_API void glEnable(GLenum cap) {
@@ -92,7 +131,7 @@ OGL_API void glDisable(GLenum cap) {
 }
 
 OGL_API GLboolean glIsEnabled(GLenum cap) {
-  const Context* c = current;
+  Context* c = current;
   return c && get_cap(c, cap) ? GL_TRUE : GL_FALSE;
 }
 
@@ -121,7 +160,7 @@ OGL_API const GLubyte *glGetString(GLenum name) {
 OGL_API void glGetIntegerv(GLenum pname, GLint *data) {
   Context* c = current;
   if (!c || !data) return;
-  double v[4];
+  double v[16];
   bool color;
   const int n = query(c, pname, v, color);
   if (!n) return gl_error(c, GL_INVALID_ENUM);
@@ -133,7 +172,7 @@ OGL_API void glGetIntegerv(GLenum pname, GLint *data) {
 OGL_API void glGetFloatv(GLenum pname, GLfloat *data) {
   Context* c = current;
   if (!c || !data) return;
-  double v[4];
+  double v[16];
   bool color;
   const int n = query(c, pname, v, color);
   if (!n) return gl_error(c, GL_INVALID_ENUM);
@@ -143,7 +182,7 @@ OGL_API void glGetFloatv(GLenum pname, GLfloat *data) {
 OGL_API void glGetBooleanv(GLenum pname, GLboolean *data) {
   Context* c = current;
   if (!c || !data) return;
-  double v[4];
+  double v[16];
   bool color;
   const int n = query(c, pname, v, color);
   if (!n) return gl_error(c, GL_INVALID_ENUM);
@@ -202,7 +241,7 @@ OGL_API void glClear(GLbitfield mask) {
   if (!bits) return;
   const int32_t w = static_cast<int32_t>(s->color.width), h = static_cast<int32_t>(s->color.height);
   int32_t x0 = 0, y0 = 0, x1 = w, y1 = h;
-  if (c->caps & bit(GL_SCISSOR_TEST)) {
+  if (c->caps & cap_mask(GL_SCISSOR_TEST)) {
     x0 = std::clamp(c->scissor[0], 0, w);
     y0 = std::clamp(c->scissor[1], 0, h);
     x1 = std::clamp(c->scissor[0] + c->scissor[2], x0, w);
@@ -258,7 +297,9 @@ OGL_API void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenu
   const VkDeviceSize bytes = VkDeviceSize(cw) * ch * 4;
   if (c->readback.size < bytes) {
     dev_destroy(c->readback);
-    if (!dev_readback(c->readback, bytes)) return gl_error(c, GL_OUT_OF_MEMORY);
+    if (!dev_host_buffer(c->readback, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                         VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+      return gl_error(c, GL_OUT_OF_MEMORY);
   }
   ctx_end_pass(*c);
   VkCommandBuffer cmd = ctx_cmd(*c);

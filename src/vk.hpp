@@ -15,7 +15,8 @@
 #define ORYON_VK_INSTANCE(X) \
   X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) \
   X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties) \
-  X(vkGetPhysicalDeviceFormatProperties) X(vkEnumerateDeviceExtensionProperties) X(vkCreateDevice) \
+  X(vkGetPhysicalDeviceFormatProperties) X(vkGetPhysicalDeviceFeatures) X(vkEnumerateDeviceExtensionProperties) \
+  X(vkCreateDevice) \
   X(vkGetDeviceProcAddr)
 
 #if defined(__ANDROID__)
@@ -37,7 +38,13 @@
   X(vkAllocateMemory) X(vkFreeMemory) X(vkMapMemory) X(vkInvalidateMappedMemoryRanges) \
   X(vkCreateRenderPass) X(vkDestroyRenderPass) X(vkCreateFramebuffer) X(vkDestroyFramebuffer) \
   X(vkCmdPipelineBarrier) X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdClearAttachments) \
-  X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkCmdBlitImage) X(vkCmdCopyImageToBuffer)
+  X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkCmdBlitImage) X(vkCmdCopyImageToBuffer) \
+  X(vkCreateDescriptorSetLayout) X(vkCreatePipelineLayout) X(vkCreateShaderModule) X(vkCreatePipelineCache) \
+  X(vkCreateGraphicsPipelines) X(vkCreateSampler) X(vkCreateDescriptorPool) X(vkResetDescriptorPool) \
+  X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindPipeline) \
+  X(vkCmdBindDescriptorSets) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed) \
+  X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetLineWidth) X(vkCmdSetDepthBias) X(vkCmdCopyBufferToImage) \
+  X(vkCmdCopyImage)
 
 #define ORYON_VK_DEVICE_OPT(X) \
   X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) \

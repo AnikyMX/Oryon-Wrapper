@@ -20,7 +20,8 @@ python3 -I tools/bootstrap.py <dir_upload> . index
 | `vkindex.py` | `<dir_vulkan> <out.json>` | Indeks header Vulkan |
 | `validate.py` | `<root> <index> [--quiet] [--so <lib>]` | Validasi `.cpp/.hpp` (+ ekspor `.so`); exit 1 jika error |
 | `glconst.py` | `<index> <header> [GL_X ...]` | Tulis ulang `src/gl_enums.hpp` dari konstanta LWJGL |
-| `hosttest.py` | `<lib.so> <index> [egl.h]` | Uji ala launcher (`dlopen`+`dlsym`, ctypes) di driver host |
+| `hosttest.py` | `<lib.so> <index> [egl.h]` | Uji ala launcher (`dlopen`+`dlsym`, ctypes) di driver host, termasuk cek piksel jalur gambar |
+| `shaders.py` | `[root]` | `shaders/*` → SPIR-V Vulkan 1.1 (glslangValidator + `spirv-val`) → `src/shaders.inc` |
 | `jtrace.py` | `<jar> <kelas> [method ...] [--ints]` | Jejak bytecode ringkas |
 | `a64trace.py` | `<lib.so> <fungsi ...>` | Jejak AArch64 ringkas |
 | `a64dis.py` | `<lib.so> <fungsi ...>` | Disassembly AArch64 beranotasi |
@@ -55,14 +56,19 @@ Di host, window surface = `VK_EXT_headless_surface` 640×480; di Android = `VK_K
 | `src/context.hpp/.cpp` | Konteks GL: rekaman command buffer (ring 2 frame), render pass lazy, clear tertunda → load op, present |
 | `src/surface.cpp` | Default framebuffer (orientasi baris GL), swapchain, pbuffer |
 | `src/egl.cpp` | 20 fungsi EGL launcher (prototipe Khronos `<EGL/egl.h>`) |
-| `src/gl_core.cpp` | `glClear*`, `glViewport`, `glScissor`, `glEnable`, `glGet*`, `glReadPixels`, `glFlush/Finish` |
+| `src/gl_core.cpp` | `glClear*`, `glViewport`, `glScissor`, `glEnable` (cap per unit), `glGet*` (+ matrix), `glReadPixels`, `glFlush/Finish` |
+| `src/gl_matrix.cpp` | Stack matrix modelview/projection/texture, `glOrtho/Rotate/Translate/Scale/MultMatrix` |
+| `src/gl_state.cpp` | Blend, depth, cull, logic op, alpha test, fog, lighting, texenv/COMBINE, texgen |
+| `src/gl_texture.cpp` | Texture RGBA8 + mip, upload BGRA/RGBA via ring, cache sampler, proxy, `glCopyTexSubImage2D` |
+| `src/gl_draw.cpp` | VBO (suballocator blok host-visible), client array, `glBegin/End`, uniform FF, cache pipeline, draw (QUADS → index batch uint16) |
+| `shaders/ff.vert`, `shaders/ff.frag` → `src/shaders.inc` | Uber-shader fixed-function (cabang uniform) |
 | `src/proc.hpp/.cpp`, `src/proc_table.inc` | Klaim versi (`ORYON_CAP_VERSION`) + tabel `eglGetProcAddress` terurut |
 
 ## Roadmap Sesi
 
 1. **Fondasi** ✅ — loader Vulkan, EGL, swapchain/pbuffer, clear/viewport/get/readback, tabel proc, CI.
-2. Jalur gambar inti — texture, VBO, client array, matrix stack, `glBegin/End`, uber-shader fixed-function, cache pipeline.
-3. Display list, FBO (GL30 + alias ARB/EXT), query, tabel stub lengkap → `ORYON_CAP_VERSION(3, 0)`.
+2. **Jalur gambar inti** ✅ — texture, VBO, client array, matrix stack, `glBegin/End`, uber-shader fixed-function, cache pipeline.
+3. Display list, FBO (GL30 + alias ARB/EXT), `glPush/PopAttrib`, `glGetTexImage`, tabel stub lengkap → `ORYON_CAP_VERSION(3, 0)`.
 4. GLSL runtime (shader post-process MC) → SPIR-V.
 5. Integrasi perangkat — recreate surface, pre-rotation, optimasi, uji MC lewat launcher.
 
