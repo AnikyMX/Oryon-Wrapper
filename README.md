@@ -6,10 +6,12 @@ Renderer Minecraft Java 1.12.2 untuk Android: OpenGL (LWJGL) → Vulkan 1.1 (hea
 
 ```
 pip install pyelftools capstone --break-system-packages
-python3 -I tools/bootstrap.py <dir_upload> . index
+python3 -I tools/bootstrap.py third_party . index
+python3 -I tools/gen_gl.py . index
+python3 -I tools/validate.py . index
 ```
 
-`<dir_upload>` berisi file berakhiran `1.12.2.jar`, `lwjgl-glfw-classes.jar`, `libpojavexec.so`. Indeks ditulis ke `index/` (tidak di-commit); semua alat hanya mencetak ringkasan.
+`<dir_upload>` berisi file berakhiran `1.12.2.jar`, `lwjgl-glfw-classes.jar`, dan opsional `libpojavexec.so`; tanpa `.so`, daftar EGL launcher diambil dari bagian *Konteks EGL* di bawah. Indeks ditulis ke `index/` (tidak di-commit); semua alat hanya mencetak ringkasan.
 
 | Alat | Pemakaian | Fungsi |
 |---|---|---|
@@ -19,6 +21,8 @@ python3 -I tools/bootstrap.py <dir_upload> . index
 | `elfscan.py` | `<lib.so> <out.json>` | Ekspor, impor, string ELF |
 | `vkindex.py` | `<dir_vulkan> <out.json>` | Indeks header Vulkan |
 | `validate.py` | `<root> <index> [--quiet]` | Validasi `.cpp/.hpp`; exit 1 jika error |
+| `gen_gl.py` | `<root> <index>` | Tulis `src/gl/gl_enums.hpp` (nilai konstanta dari LWJGL), `gl_decl.inc`, `procs.inc` (tabel `ORYON_PROC`/`ORYON_STUB`) |
+| `hosttest.py` | `<root> <work> <mesa_prefix> [--ndk <ndk>]` | Build host + smoke test di Mesa lavapipe (+ validation layer); opsional build arm64 + cek ekspor ELF |
 | `jtrace.py` | `<jar> <kelas> [method ...] [--ints]` | Jejak bytecode ringkas |
 | `a64trace.py` | `<lib.so> <fungsi ...>` | Jejak AArch64 ringkas |
 | `a64dis.py` | `<lib.so> <fungsi ...>` | Disassembly AArch64 beranotasi |
@@ -26,6 +30,22 @@ python3 -I tools/bootstrap.py <dir_upload> . index
 | `jcls.py` | — | Modul parser class file |
 
 Penanda yang dibaca `validate.py`: `OGL_API` (fungsi GL), `ORYON_PROC`/`ORYON_STUB` (tabel GetProcAddress), `ORYON_CAP_VERSION`/`ORYON_CAP_EXT` (klaim kapabilitas), `OEGL_API` (fungsi EGL), `constexpr T GL_X = v;` (konstanta). Simbol `vk*`/`Vk*`/`VK_*` wajib ada di header 131.
+
+## Build & tes
+
+CI (`.github/workflows/build.yml`, 4 step): checkout → NDK r30 → CMake arm64-v8a (`android-26`, Release, stripped) → upload `build/liboryon.so`.
+
+Lokal: `python3 -I tools/hosttest.py . <work> <mesa_prefix> --ndk <ndk>` memakai Mesa 26.0.0 lavapipe (`-Dvulkan-drivers=swrast -Dgallium-drivers=llvmpipe`) sebagai driver Vulkan sungguhan; `tests/host/smoke.cpp` memanggil `liboryon.so` persis seperti launcher (`dlopen` + `dlsym` + `eglGetProcAddress`).
+
+## Struktur
+
+| Path | Isi |
+|---|---|
+| `src/vk/` | Loader Vulkan (`dlopen`), device 1.1, framebuffer default + perekam command buffer, swapchain Android |
+| `src/egl/` | 20 fungsi EGL launcher, satu display + satu config |
+| `src/gl/` | State GL per konteks, fungsi `OGL_API`, file hasil `gen_gl.py` |
+
+Framebuffer default disimpan bottom-up (baris image = y window GL): `glReadPixels`/salin tekstur tanpa flip, flip hanya saat present (blit).
 
 ## Konteks EGL
 
